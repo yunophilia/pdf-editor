@@ -1,0 +1,13 @@
+{
+  "name": "PDF Editor",
+  "short_name": "PDF Editor",
+  "description": "Offline PDF editor — runs entirely in your browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f8fa",
+  "theme_color": "#1f2328",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
