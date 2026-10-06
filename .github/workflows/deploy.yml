@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -41,7 +41,11 @@ jobs:
           sed -i "s/const CACHE_VERSION = 'dev';/const CACHE_VERSION = '${GITHUB_SHA::12}';/" www/sw.js
           touch www/.nojekyll
 
+      # enablement: turn Pages on for the repo if it isn't already, so a fresh
+      # clone of this repo deploys without first visiting the Pages settings.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
