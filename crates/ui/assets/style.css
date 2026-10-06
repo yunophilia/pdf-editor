@@ -267,6 +267,17 @@ input[type="range"] { width: 90px; vertical-align: middle; }
 .field.required input,
 .field.required textarea,
 .field.required select { border-color: var(--danger); }
+
+/* A field the document marks read-only: visible, clearly not editable. */
+.field.read-only input,
+.field.read-only textarea,
+.field.read-only select {
+  border-style: dashed;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: not-allowed;
+}
 .field input:focus,
 .field textarea:focus,
 .field select:focus { outline: 2px solid var(--accent); }
@@ -284,4 +295,40 @@ input[type="range"] { width: 90px; vertical-align: middle; }
   .body { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .group.options { display: none; }
+}
+
+/* ---------- printing ---------- */
+/*
+ * Printing shows the document, not the editor: the chrome, the tool overlay
+ * and the field inputs all come off, leaving one page image per sheet. The
+ * values themselves are already drawn into the page by the engine, so the
+ * printed form carries what was filled in.
+ */
+@media print {
+  html, body { overflow: visible; height: auto; background: #fff; }
+  .toolbar,
+  .sidebar,
+  .status,
+  .page-label,
+  .overlay,
+  .form-layer,
+  .text-entry { display: none !important; }
+
+  .app { display: block; height: auto; }
+  .body { display: block; }
+  .viewer { overflow: visible; padding: 0; }
+  .pages { display: block; }
+
+  .page-slot { break-inside: avoid; page-break-inside: avoid; }
+  .page {
+    box-shadow: none;
+    /* Override the inline zoom sizing so a sheet holds a whole page. */
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: auto;
+    break-after: page;
+    page-break-after: always;
+  }
+  .page .render { position: static; width: 100%; height: auto; }
+  .page-slot:last-child .page { break-after: auto; page-break-after: auto; }
 }

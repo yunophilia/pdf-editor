@@ -248,6 +248,7 @@ pub enum Command {
     FormFields,
     SetField { id: u32, value: FieldValue },
     FlattenForm,
+    ResetForm,
 }
 
 /// The engine's reply.

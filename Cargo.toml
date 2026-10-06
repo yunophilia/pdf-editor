@@ -16,6 +16,9 @@ pdf-editor-core = { path = "crates/core" }
 serde = { version = "1", features = ["derive"] }
 
 [profile.release]
-opt-level = "s"
+# The rasteriser is the hot path, so optimise it for speed even on the web:
+# the extra wasm bytes cost one cached download, the speed is paid back on
+# every page render.
+opt-level = 3
 lto = true
 codegen-units = 1

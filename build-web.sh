@@ -5,6 +5,10 @@ cd "$(dirname "$0")"
 
 MODE="${1:---release}"
 
+# simd128 is supported by every browser that can run this app, and the CPU
+# rasteriser leans on it heavily.
+export RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+simd128"
+
 echo "==> UI"
 wasm-pack build crates/ui --target web --out-dir ../../web/pkg --out-name pdf_editor_ui "$MODE" --no-pack
 

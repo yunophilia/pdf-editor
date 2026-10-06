@@ -18,6 +18,7 @@ machine — there is no server, no upload, no telemetry.
   regenerated so the values show up in every viewer. Forms can be flattened.
 - Annotate: text, highlighter, rectangles, freehand ink, images
 - Undo / redo, and save to a new PDF
+- Reset a form to its defaults, and print (the page images print; editor chrome does not)
 
 Edits are written as real PDF content via [lopdf](https://github.com/J-F-Liu/lopdf),
 so other viewers see them too.
@@ -116,6 +117,11 @@ site, so this one step cannot be automated.
 - Existing page content cannot be edited or removed — annotations are layered on
   top. Undo takes back anything you just added.
 - Signature fields are shown but cannot be signed.
+- A form's own "Save" / "Print Form" / "Reset Form" buttons do nothing. Those
+  are usually XFA or JavaScript controls, and this editor runs neither; in many
+  government forms the scripting layer has been stripped entirely, leaving
+  buttons that are inert in every viewer. Use the toolbar's Save, Print and
+  Reset instead, which do the same jobs.
 - Rendering is CPU-only and single-threaded on the web (wasm threads need
   `SharedArrayBuffer`, which needs COOP/COEP headers that GitHub Pages cannot
   set). The desktop build has no such limit.

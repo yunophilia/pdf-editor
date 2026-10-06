@@ -65,8 +65,10 @@ pub struct State {
     pub stroke_width: Signal<f64>,
     pub opacity: Signal<f64>,
     pub show_forms: Signal<bool>,
-    /// Bumped whenever page pixels may have changed, to re-run renders.
-    pub generation: Signal<u64>,
+    /// One counter per page, bumped when *that* page's pixels may have
+    /// changed. Editing a field used to bump a single global counter, which
+    /// re-rasterised every loaded page for a one-page change.
+    pub page_gen: Signal<Vec<u64>>,
     /// An in-progress text insertion: page and view-space position.
     pub text_at: Signal<Option<(usize, f64, f64)>>,
     /// An image waiting to be placed.
@@ -74,11 +76,30 @@ pub struct State {
 }
 
 impl State {
-    /// Fold a fresh engine reply into the UI state.
+    /// Fold in a reply after a change that may affect any page: pages added,
+    /// removed, reordered, or an undo of something unknown.
     fn apply(&mut self, info: DocInfo) {
+        self.store(info, None);
+    }
+
+    /// Fold in a reply after a change confined to one page, so only that page
+    /// is re-rendered.
+    fn apply_page(&mut self, info: DocInfo, page: usize) {
+        self.store(info, Some(page));
+    }
+
+    fn store(&mut self, info: DocInfo, only: Option<usize>) {
         let pages = info.pages.len();
+        let structural = self.page_gen.read().len() != pages;
         self.doc.set(Some(info));
-        self.generation += 1;
+        {
+            let mut gen = self.page_gen.write();
+            gen.resize(pages, 0);
+            match only {
+                Some(i) if !structural && i < pages => gen[i] += 1,
+                _ => gen.iter_mut().for_each(|g| *g += 1),
+            }
+        }
         self.selected.write().retain(|i| *i < pages);
     }
 
@@ -132,7 +153,7 @@ pub fn App() -> Element {
         stroke_width: use_signal(|| 2.0),
         opacity: use_signal(|| 1.0),
         show_forms: use_signal(|| true),
-        generation: use_signal(|| 0u64),
+        page_gen: use_signal(Vec::new),
         text_at: use_signal(|| None),
         pending_image: use_signal(|| None),
     };
@@ -303,6 +324,16 @@ fn Toolbar() -> Element {
                 button { onclick: new_doc, "New" }
                 button { disabled: !has_doc, onclick: add_pdf, "Add PDF" }
                 button { class: "primary", disabled: !has_doc, onclick: save, "Save" }
+                button {
+                    disabled: !has_doc,
+                    title: "Print the pages as they appear here",
+                    onclick: move |_| {
+                        // A print stylesheet hides the editor chrome and lays
+                        // the page images out one per sheet.
+                        document::eval("window.print()");
+                    },
+                    "Print"
+                }
             }
 
             div { class: "group",
@@ -404,7 +435,18 @@ fn Toolbar() -> Element {
                         "Form fields"
                     }
                     button {
+                        onclick: command(
+                            engine.clone(),
+                            state,
+                            Command::ResetForm,
+                            "Reset every field to its default",
+                        ),
+                        title: "Clear every field, or restore its default value",
+                        "Reset"
+                    }
+                    button {
                         onclick: command(engine.clone(), state, Command::FlattenForm, "Flattened the form"),
+                        title: "Bake the field values into the page and remove the form",
                         "Flatten"
                     }
                 }
@@ -646,10 +688,11 @@ fn Thumb(index: usize, width: f32, height: f32) -> Element {
     let mut state = use_context::<State>();
     let mut seen = use_signal(|| index < 8);
 
+    let my_gen = use_memo(move || state.page_gen.read().get(index).copied().unwrap_or(0));
+
     let png = use_resource(move || {
         let engine = engine.clone();
-        let generation = state.generation;
-        let g = generation();
+        let g = my_gen();
         let visible = seen();
         async move {
             let _ = g;
@@ -753,13 +796,16 @@ fn PageView(index: usize, width: f32, height: f32) -> Element {
     let zoom = (state.zoom)();
     let tool = (state.tool)();
 
+    // A memo so this page only re-renders when *its* counter moves, not when
+    // any page changes.
+    let my_gen = use_memo(move || state.page_gen.read().get(index).copied().unwrap_or(0));
+
     let png = {
         let engine = engine.clone();
         use_resource(move || {
             let engine = engine.clone();
-            let generation = state.generation;
             let zoom_sig = state.zoom;
-            let g = generation();
+            let g = my_gen();
             let z = zoom_sig();
             let visible = seen();
             async move {
@@ -891,7 +937,7 @@ fn PageView(index: usize, width: f32, height: f32) -> Element {
                 };
                 match result {
                     Ok(info) => {
-                        state.apply(info);
+                        state.apply_page(info, index);
                         refresh_fields(&engine, state).await;
                     }
                     Err(e) => state.fail("Edit failed", e),
@@ -1016,7 +1062,7 @@ fn TextEntry(page: usize, x: f64, y: f64, zoom: f64) -> Element {
                 color: hex_to_rgb(&state.color.read()),
             };
             match engine.exec(Command::AddText(spec)).await {
-                Ok(info) => state.apply(info),
+                Ok(info) => state.apply_page(info, page),
                 Err(e) => state.fail("Could not add text", e),
             }
         });
@@ -1060,10 +1106,39 @@ fn FormLayer(page: usize, zoom: f64) -> Element {
     rsx! {
         div { class: "form-layer",
             for field in fields {
-                FieldWidget { key: "{field.id}", field: field.clone(), zoom }
+                // The value is part of the key so a change made elsewhere --
+                // Reset, Undo, a radio group clearing its siblings -- remounts
+                // the input with the new value. Typing alone does not change
+                // the signal, so an edit in progress is never interrupted.
+                FieldWidget {
+                    key: "{field.id}:{value_key(&field.value)}",
+                    field: field.clone(),
+                    zoom,
+                }
             }
         }
     }
+}
+
+/// A compact, stable rendering of a field value, used as part of a widget's
+/// key so externally-driven changes remount the input.
+fn value_key(value: &FieldValue) -> String {
+    match value {
+        FieldValue::Text(t) => format!("t{:x}", short_hash(t)),
+        FieldValue::Selected(v) => format!("s{:x}", short_hash(&format!("{v:?}"))),
+        FieldValue::Bool(b) => format!("b{}", u8::from(*b)),
+        FieldValue::Empty => "e".to_string(),
+    }
+}
+
+/// FNV-1a: not cryptographic, just enough to keep keys short and stable.
+fn short_hash(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 #[component]
@@ -1085,12 +1160,15 @@ fn FieldWidget(field: FormField, zoom: f64) -> Element {
         .unwrap_or_else(|| field.name.clone());
 
     let id = field.id;
+    let page = r.page;
     let commit = move |value: FieldValue| {
         let engine = engine.clone();
         spawn(async move {
             match engine.exec(Command::SetField { id, value }).await {
                 Ok(info) => {
-                    state.apply(info);
+                    // A radio group can span pages, but its widgets' pixels
+                    // only change on this one; the rest is re-read below.
+                    state.apply_page(info, page);
                     refresh_fields(&engine, state).await;
                 }
                 Err(e) => state.fail("Could not update the field", e),
@@ -1168,9 +1246,15 @@ fn FieldWidget(field: FormField, zoom: f64) -> Element {
         FieldKind::Button => rsx! {},
     };
 
+    let class = match (field.read_only, field.required) {
+        (true, _) => "field read-only",
+        (false, true) => "field required",
+        _ => "field",
+    };
+
     rsx! {
         div {
-            class: if field.required { "field required" } else { "field" },
+            class: "{class}",
             style: "{style}",
             title: "{title}",
             {inner}

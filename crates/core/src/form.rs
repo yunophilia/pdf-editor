@@ -171,25 +171,88 @@ impl PdfEditor {
     /// change is visible both here and in other viewers.
     pub fn set_field_value(&mut self, widget_id: u32, value: &FieldValue) -> Result<()> {
         let terminals = self.collect_terminals()?;
-        let t = terminals
+        let index = terminals
             .iter()
-            .find(|t| t.widgets.iter().any(|w| w.0 == widget_id))
+            .position(|t| t.widgets.iter().any(|w| w.0 == widget_id))
             .ok_or(Error::Invalid("no such form field"))?;
-        if t.ff & flags::READ_ONLY != 0 {
+        if terminals[index].ff & flags::READ_ONLY != 0 {
             return Err(Error::Invalid("field is read-only"));
         }
-
-        let widget_of = t.widgets.iter().copied().find(|w| w.0 == widget_id);
-        let kind = self.field_kind(t, widget_of);
-        let field_id = t.field_id;
-        let widgets = t.widgets.clone();
-        let widget = widgets
+        let widget = terminals[index]
+            .widgets
             .iter()
             .copied()
             .find(|w| w.0 == widget_id)
             .ok_or(Error::Invalid("no such form field"))?;
 
         self.checkpoint();
+        self.write_field(&terminals[index], Some(widget), value)?;
+        self.invalidate();
+        Ok(())
+    }
+
+    /// Restore every field to its default value (`/DV`), or clear it when the
+    /// document declares no default. This is what a form's own "reset" control
+    /// does in a viewer that can run the document's scripts.
+    pub fn reset_form(&mut self) -> Result<()> {
+        if !self.has_form() {
+            return Ok(());
+        }
+        let terminals = self.collect_terminals()?;
+        self.checkpoint();
+        for t in &terminals {
+            if t.ff & flags::READ_ONLY != 0 {
+                continue;
+            }
+            let kind = self.field_kind(t, t.widgets.first().copied());
+            if matches!(kind, FieldKind::Button | FieldKind::Signature) {
+                continue;
+            }
+            let default = self.default_value(t, &kind);
+            // `None` applies the value to every widget, which is what a reset
+            // means for a radio group: all of them go to their default state.
+            self.write_field(t, None, &default)?;
+        }
+        self.invalidate();
+        Ok(())
+    }
+
+    /// A field's `/DV`, or an empty value when it has none.
+    fn default_value(&self, t: &Terminal, kind: &FieldKind) -> FieldValue {
+        let dv = self
+            .doc
+            .get_dictionary(t.field_id)
+            .ok()
+            .and_then(|d| self.get(d, b"DV").cloned());
+        match kind {
+            FieldKind::Checkbox { on_value } | FieldKind::Radio { on_value } => match dv {
+                Some(Object::Name(n)) => {
+                    FieldValue::Bool(String::from_utf8_lossy(&n) == *on_value)
+                }
+                _ => FieldValue::Bool(false),
+            },
+            FieldKind::Choice { .. } => match dv {
+                Some(Object::String(s, _)) => FieldValue::Selected(vec![decode_text(&s)]),
+                _ => FieldValue::Selected(Vec::new()),
+            },
+            _ => match dv {
+                Some(Object::String(s, _)) => FieldValue::Text(decode_text(&s)),
+                _ => FieldValue::Text(String::new()),
+            },
+        }
+    }
+
+    /// Write a value into a field. `widget` names which widget the value refers
+    /// to, which matters for radio groups; `None` means "apply to all".
+    fn write_field(
+        &mut self,
+        t: &Terminal,
+        widget: Option<ObjectId>,
+        value: &FieldValue,
+    ) -> Result<()> {
+        let kind = self.field_kind(t, widget.or_else(|| t.widgets.first().copied()));
+        let field_id = t.field_id;
+        let widgets = t.widgets.clone();
 
         match &kind {
             FieldKind::Checkbox { on_value } | FieldKind::Radio { on_value } => {
@@ -199,9 +262,10 @@ impl PdfEditor {
                     .get_dictionary_mut(field_id)
                     .map_err(pdf_err)?
                     .set("V", Object::Name(state.clone()));
-                // Every widget of a radio group shows Off except the chosen one.
+                // Only the chosen widget shows its on state; the rest go Off.
                 for w in widgets {
-                    let want = if w == widget && on { state.clone() } else { b"Off".to_vec() };
+                    let chosen = widget.is_none_or(|target| w == target);
+                    let want = if chosen && on { state.clone() } else { b"Off".to_vec() };
                     if let Ok(d) = self.doc.get_dictionary_mut(w) {
                         d.set("AS", Object::Name(want));
                     }
@@ -209,10 +273,14 @@ impl PdfEditor {
             }
             FieldKind::Text { .. } | FieldKind::Choice { .. } => {
                 let text = value.as_text().to_string();
-                self.doc
-                    .get_dictionary_mut(field_id)
-                    .map_err(pdf_err)?
-                    .set("V", encode_text(&text));
+                let dict = self.doc.get_dictionary_mut(field_id).map_err(pdf_err)?;
+                if text.is_empty() {
+                    // Drop /V rather than storing an empty string, so the field
+                    // reads back as genuinely unset.
+                    dict.remove(b"V");
+                } else {
+                    dict.set("V", encode_text(&text));
+                }
                 for w in widgets {
                     self.regenerate_appearance(w, &text)?;
                 }
@@ -221,8 +289,6 @@ impl PdfEditor {
                 return Err(Error::Invalid("field type cannot be edited"));
             }
         }
-
-        self.invalidate();
         Ok(())
     }
 

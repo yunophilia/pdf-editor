@@ -209,6 +209,7 @@ impl PdfEditor {
             Command::FormFields => return Ok(Response::Fields(self.form_fields()?)),
             Command::SetField { id, value } => self.set_field_value(id, &value)?,
             Command::FlattenForm => self.flatten_form()?,
+            Command::ResetForm => self.reset_form()?,
         }
         Ok(Response::Info(self.info()?))
     }
@@ -1211,6 +1212,42 @@ mod tests {
         let mut back = PdfEditor::new(&saved).unwrap();
         assert!(!back.has_form());
         assert_eq!(pixel(&mut back, 0, 80, 792 - 568), [0, 0, 255]);
+    }
+
+    #[test]
+    fn resetting_clears_values_and_restores_defaults() {
+        let mut ed = PdfEditor::new(FORM).unwrap();
+        let fields = ed.form_fields().unwrap();
+        let (name_id, check_id, pro_id, country_id) =
+            (fields[0].id, fields[2].id, fields[4].id, fields[5].id);
+
+        ed.set_field_value(name_id, &FieldValue::Text("Grace Hopper".into())).unwrap();
+        ed.set_field_value(check_id, &FieldValue::Bool(true)).unwrap();
+        ed.set_field_value(pro_id, &FieldValue::Bool(true)).unwrap();
+        ed.set_field_value(country_id, &FieldValue::Selected(vec!["Peru".into()])).unwrap();
+
+        ed.reset_form().unwrap();
+
+        // The fixture declares no /DV, so every field returns to unset.
+        let after = ed.form_fields().unwrap();
+        assert_eq!(after[0].value, FieldValue::Empty, "text field should be cleared");
+        assert_eq!(after[2].value, FieldValue::Bool(false));
+        assert_eq!(after[3].value, FieldValue::Bool(false));
+        assert_eq!(after[4].value, FieldValue::Bool(false));
+        assert_eq!(after[5].value, FieldValue::Empty, "choice should be cleared");
+
+        // And it is one undoable step, not one per field.
+        assert!(ed.undo());
+        let back = ed.form_fields().unwrap();
+        assert_eq!(back[0].value, FieldValue::Text("Grace Hopper".into()));
+        assert_eq!(back[4].value, FieldValue::Bool(true));
+    }
+
+    #[test]
+    fn resetting_a_document_without_a_form_is_a_no_op() {
+        let mut ed = PdfEditor::new(SAMPLE).unwrap();
+        ed.reset_form().unwrap();
+        assert!(!ed.can_undo());
     }
 
     #[test]
