@@ -1,0 +1,11 @@
+# Types that cross the UI <-> core boundary: postMessage on web, a channel on
+# desktop. Deliberately dependency-light so the web UI's wasm does not pull in
+# lopdf or hayro just to name a page size.
+[package]
+name = "pdf-editor-shared"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }

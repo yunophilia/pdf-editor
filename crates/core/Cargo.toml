@@ -1,0 +1,15 @@
+# Pure-Rust PDF engine. No wasm-bindgen here: this crate compiles natively for
+# the desktop build and to wasm for the worker shim alike.
+[package]
+name = "pdf-editor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pdf-editor-shared = { workspace = true }
+lopdf = { version = "0.45", default-features = false, features = ["wasm_js"] }
+hayro = "0.7"
+
+[dev-dependencies]
+serde = { workspace = true }
