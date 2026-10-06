@@ -111,14 +111,17 @@ mod imp {
     use std::sync::mpsc::{self, Sender};
     use std::sync::{Arc, Mutex};
 
+    /// A queued unit of work plus the channel its answer goes back on.
+    type Job = (Request, oneshot::Sender<Answer>);
+
     #[derive(Clone)]
     pub struct Engine {
-        tx: Arc<Mutex<Sender<(Request, oneshot::Sender<Answer>)>>>,
+        tx: Arc<Mutex<Sender<Job>>>,
     }
 
     impl Engine {
         pub fn new() -> Self {
-            let (tx, rx) = mpsc::channel::<(Request, oneshot::Sender<Answer>)>();
+            let (tx, rx) = mpsc::channel::<Job>();
             std::thread::Builder::new()
                 .name("pdf-engine".into())
                 .spawn(move || {

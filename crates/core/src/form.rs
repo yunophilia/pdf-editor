@@ -28,6 +28,14 @@ mod flags {
 /// How deep the field tree may nest before we assume a cycle.
 const MAX_DEPTH: usize = 32;
 
+/// Annotation flags (`/F`) that mean the user cannot see a widget.
+const ANNOT_HIDDEN: i64 = 1 << 1;
+const ANNOT_NO_VIEW: i64 = 1 << 5;
+
+/// Widgets thinner than this (in points) are not really on the page; real
+/// forms carry a few as layout artefacts.
+const MIN_WIDGET_SIZE: f64 = 1.0;
+
 // ---------------------------------------------------------------------------
 // Text encoding
 // ---------------------------------------------------------------------------
@@ -37,8 +45,10 @@ const MAX_DEPTH: usize = 32;
 fn decode_text(bytes: &[u8]) -> String {
     if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
         let units: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes(*c))
             .collect();
         String::from_utf16_lossy(&units)
     } else {
@@ -130,9 +140,15 @@ impl PdfEditor {
                     // A widget no page lists is not reachable by the user.
                     continue;
                 };
+                if !self.widget_is_visible(w) {
+                    continue;
+                }
                 let Some(rect) = self.widget_rect(w, page, &transforms) else {
                     continue;
                 };
+                if rect.width < MIN_WIDGET_SIZE || rect.height < MIN_WIDGET_SIZE {
+                    continue;
+                }
                 let value = self.widget_value(t, w, &kind);
                 out.push(FormField {
                     id: w.0,
@@ -536,6 +552,15 @@ impl PdfEditor {
             width: max_x - min_x,
             height: max_y - min_y,
         })
+    }
+
+    /// Whether a widget is presented to the user at all. A document may mark
+    /// an annotation hidden or non-viewable, in which case offering it as an
+    /// editable field would be wrong.
+    fn widget_is_visible(&self, widget: ObjectId) -> bool {
+        let Ok(dict) = self.doc.get_dictionary(widget) else { return false };
+        let flags = dict.get(b"F").and_then(Object::as_i64).unwrap_or(0);
+        flags & (ANNOT_HIDDEN | ANNOT_NO_VIEW) == 0
     }
 
     /// The object id of a widget's current normal appearance stream.

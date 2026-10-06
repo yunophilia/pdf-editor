@@ -554,7 +554,7 @@ impl PdfEditor {
         )
         .unwrap();
         writeln!(ops, "{} {} m", n(spec.points[0]), n(height - spec.points[1])).unwrap();
-        for p in spec.points[2..].chunks_exact(2) {
+        for p in spec.points[2..].as_chunks::<2>().0 {
             writeln!(ops, "{} {} l", n(p[0]), n(height - p[1])).unwrap();
         }
         ops.push_str("S Q\n");
@@ -575,7 +575,7 @@ impl PdfEditor {
         let mut rgb = Vec::with_capacity(expected / 4 * 3);
         let mut alpha = Vec::with_capacity(expected / 4);
         let mut opaque = true;
-        for px in spec.rgba.chunks_exact(4) {
+        for px in spec.rgba.as_chunks::<4>().0 {
             rgb.extend_from_slice(&px[..3]);
             alpha.push(px[3]);
             opaque &= px[3] == 255;
@@ -667,10 +667,7 @@ impl PdfEditor {
     }
 
     fn page_id(&self, index: usize) -> Result<ObjectId> {
-        self.page_ids()
-            .get(index)
-            .copied()
-            .ok_or_else(|| Error::PageIndex)
+        self.page_ids().get(index).copied().ok_or(Error::PageIndex)
     }
 
     fn pages_root(&self) -> Result<ObjectId> {
@@ -1072,6 +1069,8 @@ mod tests {
         assert!(ed.has_form());
         let fields = ed.form_fields().unwrap();
 
+        // A hidden widget (/F bit 2) and one with a degenerate rect are in the
+        // fixture's /Fields but must not be offered as editable.
         let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["fullname", "notes", "subscribe", "plan", "plan", "country"]);
 

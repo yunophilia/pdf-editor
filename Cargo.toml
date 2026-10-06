@@ -5,6 +5,8 @@ members = ["crates/shared", "crates/core", "crates/worker", "crates/ui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# hayro needs 1.92; slice::as_chunks needs 1.88.
+rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/yunophilia/pdf-editor"
 
