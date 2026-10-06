@@ -15,7 +15,8 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{RenderCache, RenderSettings};
 use lopdf::{dictionary, Dictionary, Document, Object, ObjectId, Stream};
 use pdf_editor_shared::{
-    DocInfo, ImageSpec, InkSpec, PageSize, Raster, RectSpec, Rgb, StandardFont, TextSpec,
+    Command, DocInfo, ImageSpec, InkSpec, PageSize, Raster, RectSpec, Response, Rgb, StandardFont,
+    TextSpec,
 };
 use std::fmt::Write as _;
 
@@ -180,6 +181,38 @@ impl PdfEditor {
         })
     }
 
+    /// Apply one structured command.
+    ///
+    /// Both front ends funnel through here — the web worker after decoding
+    /// JSON, the desktop thread directly — so command semantics live in one
+    /// place.
+    pub fn apply(&mut self, cmd: Command) -> Result<Response> {
+        match cmd {
+            Command::Info => {}
+            Command::Rotate { index, delta } => self.rotate_page(index, delta)?,
+            Command::Delete { index } => self.delete_page(index)?,
+            Command::Move { from, to } => self.move_page(from, to)?,
+            Command::Reorder { order } => self.reorder_pages(&order)?,
+            Command::Duplicate { index } => self.duplicate_page(index)?,
+            Command::InsertBlank { index, width, height } => {
+                self.insert_blank_page(index, width, height)?
+            }
+            Command::Undo => {
+                self.undo();
+            }
+            Command::Redo => {
+                self.redo();
+            }
+            Command::AddText(spec) => self.add_text(&spec)?,
+            Command::AddRect(spec) => self.add_rect(&spec)?,
+            Command::AddInk(spec) => self.add_ink(&spec)?,
+            Command::FormFields => return Ok(Response::Fields(self.form_fields()?)),
+            Command::SetField { id, value } => self.set_field_value(id, &value)?,
+            Command::FlattenForm => self.flatten_form()?,
+        }
+        Ok(Response::Info(self.info()?))
+    }
+
     // ------------------------------------------------------------ undo/redo
 
     pub fn can_undo(&self) -> bool {
@@ -241,27 +274,35 @@ impl PdfEditor {
 
     // --------------------------------------------------------------- render
 
+    /// Rasterise a page to a PNG.
+    ///
+    /// The UI displays pages as images rather than painting pixels onto a
+    /// canvas, which keeps the view layer identical on web and desktop.
+    pub fn render_page_png(&mut self, index: usize, scale: f32) -> Result<Vec<u8>> {
+        self.rasterise(index, scale)?.into_png().map_err(pdf_err)
+    }
+
     /// Rasterise a page at `scale` (1.0 = 72 dpi).
     pub fn render_page(&mut self, index: usize, scale: f32) -> Result<Raster> {
+        let pixmap = self.rasterise(index, scale)?;
+        Ok(Raster {
+            width: pixmap.width() as u32,
+            height: pixmap.height() as u32,
+            data: pixmap.data_as_u8_slice().to_vec(),
+        })
+    }
+
+    fn rasterise(&mut self, index: usize, scale: f32) -> Result<hayro::vello_cpu::Pixmap> {
         self.ensure_rendered()?;
         let pdf = self.rendered.as_ref().unwrap();
-        let page = pdf
-            .pages()
-            .get(index)
-            .ok_or(Error::PageIndex)?;
+        let page = pdf.pages().get(index).ok_or(Error::PageIndex)?;
         let settings = RenderSettings {
             x_scale: scale,
             y_scale: scale,
             bg_color: WHITE,
             ..Default::default()
         };
-        let cache = RenderCache::new();
-        let pixmap = hayro::render(page, &cache, &self.interp, &settings);
-        Ok(Raster {
-            width: pixmap.width() as u32,
-            height: pixmap.height() as u32,
-            data: pixmap.data_as_u8_slice().to_vec(),
-        })
+        Ok(hayro::render(page, &RenderCache::new(), &self.interp, &settings))
     }
 
     // ------------------------------------------------------------ page ops

@@ -4318,7 +4318,11 @@ dependencies = [
 name = "pdf-editor-ui"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "dioxus",
+ "futures-channel",
+ "futures-util",
+ "image",
  "js-sys",
  "pdf-editor-core",
  "pdf-editor-shared",
@@ -4338,7 +4342,7 @@ dependencies = [
  "pdf-editor-core",
  "pdf-editor-shared",
  "serde",
- "serde-wasm-bindgen",
+ "serde_json",
  "wasm-bindgen",
 ]
 

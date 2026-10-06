@@ -241,7 +241,7 @@ impl PdfEditor {
         }
 
         // Drop the annotations and the form dictionary itself.
-        for (&widget, _) in &widget_pages {
+        for &widget in widget_pages.keys() {
             for &page_id in &page_ids {
                 if let Ok(dict) = self.doc.get_dictionary_mut(page_id) {
                     if let Ok(Object::Array(annots)) = dict.get_mut(b"Annots") {
