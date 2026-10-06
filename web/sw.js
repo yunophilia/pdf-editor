@@ -14,7 +14,26 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // Fetch with cache: 'reload' so the HTTP cache cannot hand us the previous
+  // deploy's files. Asset names are not content-hashed, so a plain addAll()
+  // will happily populate a brand-new cache with stale bytes while the hosting
+  // layer's max-age is still in force -- producing a new shell wired to old
+  // scripts.
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) =>
+        Promise.all(
+          ASSETS.map((url) =>
+            fetch(new Request(url, { cache: 'reload' })).then((res) => {
+              if (!res.ok) throw new Error(`${url}: ${res.status}`);
+              return cache.put(url, res);
+            }),
+          ),
+        ),
+      )
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
