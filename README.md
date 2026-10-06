@@ -1,87 +1,117 @@
 # PDF Editor
 
-An offline PDF editor that runs entirely in the browser. The core is Rust
-compiled to WebAssembly; the UI is plain HTML/CSS/JS with no build step or
-framework. Everything is static, so it deploys straight to GitHub Pages and
-keeps working with no network once loaded (it installs as a PWA).
+A PDF editor written in Rust that runs **entirely offline**, as a web app and as
+a native desktop app from the same codebase. Nothing you open ever leaves your
+machine — there is no server, no upload, no telemetry.
 
-Nothing you open ever leaves your machine.
+- **Web:** <https://yunophilia.github.io/pdf-editor/> — static files on GitHub
+  Pages; installs as a PWA and keeps working with no network after first load.
+- **Desktop:** a native binary for Windows, macOS and Linux.
 
 ## Features
 
-- Open, view and zoom PDFs (rendered by [hayro](https://github.com/LaurenzV/hayro), a pure-Rust rasteriser)
-- Page management: reorder (drag thumbnails), rotate, duplicate, delete, insert blank pages
+- View, zoom and page through PDFs (rendered by [hayro](https://github.com/LaurenzV/hayro), a pure-Rust rasteriser)
+- Page management: rotate, reorder, duplicate, delete, insert blank pages
 - Merge another PDF in, or extract selected pages to a new file
-- Annotate: text (standard fonts), highlighter, rectangles, freehand drawing, images
-- Undo / redo
-- Save the result as a new PDF
+- **Interactive form (AcroForm) editing** — text, multiline, checkbox, radio
+  groups and dropdowns, edited in place over the page, with appearance streams
+  regenerated so the values show up in every viewer. Forms can be flattened.
+- Annotate: text, highlighter, rectangles, freehand ink, images
+- Undo / redo, and save to a new PDF
 
-Edits are written as real PDF content (via [lopdf](https://github.com/J-F-Liu/lopdf)),
-so they show up in every viewer.
+Edits are written as real PDF content via [lopdf](https://github.com/J-F-Liu/lopdf),
+so other viewers see them too.
 
-## Layout
+## How it is put together
 
 ```
-src/lib.rs      Rust core: page tree editing, annotations, rendering (wasm-bindgen API)
-www/            The static site
-  index.html    UI shell
-  app.js        UI logic, talks to the worker
-  worker.js     Web Worker that hosts the WASM module
-  sw.js         Service worker for offline use
-  pkg/          wasm-pack output (generated, not committed)
-serve.py        Dev server with correct MIME types
-tests/          Fixtures for `cargo test`
+crates/shared   Types crossing the UI <-> engine boundary (serde). Deliberately
+                dependency-light so the web UI's wasm need not link the engine.
+crates/core     The engine: page tree, content streams, forms, rasterising.
+                Plain Rust — no wasm-bindgen — so it builds natively too.
+crates/worker   Thin wasm shim hosting the engine in a Web Worker (web only).
+crates/ui       Dioxus app. One component tree for both targets.
+web/            Static shell for the web build (HTML, service worker, manifest).
 ```
 
-## Building locally
+Two things, and only two, are platform-specific:
 
-Requirements: Rust (stable), the `wasm32-unknown-unknown` target, and `wasm-pack`.
+| | Web | Desktop |
+| --- | --- | --- |
+| Engine transport | Web Worker, `postMessage` | a thread that owns the editor |
+| File dialogs | file input / object URL | `rfd` native dialogs |
+
+Everything else is shared. Pages are rasterised to PNG by the engine and shown
+as `<img>`, with an SVG overlay for live tool feedback and real inputs for form
+fields, so the view layer needs no canvas interop and behaves identically in a
+browser and in the desktop webview. Image decoding uses the `image` crate on
+both targets.
+
+The desktop build is not merely the web build in a window: the engine is
+compiled natively there, so it has real threads and real file I/O, and none of
+the wasm download cost.
+
+## Building
+
+Requirements: Rust (stable). For the web build also:
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
 ```
 
-Build the WASM package and serve the site:
+### Desktop
 
 ```bash
-wasm-pack build --target web --release --out-dir www/pkg
-python serve.py
+cargo run --release -p pdf-editor-ui
 ```
 
-Then open <http://127.0.0.1:8765>. (Any static server works, as long as it
-serves `.js` as `text/javascript` and `.wasm` as `application/wasm` — Python's
-default `http.server` on Windows does not, hence `serve.py`.)
+Pass a path to open a document at launch: `cargo run -p pdf-editor-ui -- file.pdf`.
 
-Run the tests with `cargo test`.
+On Linux you will need the webview development packages
+(`libwebkit2gtk-4.1-dev`, `libgtk-3-dev`).
 
-## Deploying to GitHub Pages
+### Web
 
-1. Push this repository to GitHub with the default branch named `main`.
-2. In the repository settings, under **Pages**, set **Source** to **GitHub Actions**.
-3. Every push to `main` runs [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml),
-   which tests, builds the WASM, and publishes `www/` to
-   `https://<user>.github.io/<repo>/`.
+```bash
+./build-web.sh && python serve.py
+```
 
-All asset paths are relative, so the site works from a sub-path without
-configuration.
+Then open <http://127.0.0.1:8765>. `?open=<same-origin path>` loads a PDF
+straight away, e.g. `http://127.0.0.1:8765/?open=sample.pdf`.
 
-## Keyboard shortcuts
+Any static server works, provided it serves `.js` as `text/javascript` and
+`.wasm` as `application/wasm` — Python's stock `http.server` does not on
+Windows, which is why `serve.py` exists.
 
-| Key | Action |
-| --- | --- |
-| `Ctrl+O` / `Ctrl+S` | Open / Save |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
-| `Ctrl` + `+` / `-` / wheel | Zoom |
-| `V` `T` `H` `R` `D` `I` | Select, Text, Highlight, Rect, Draw, Image tools |
-| `Delete` | Delete selected pages |
-| `Esc` | Back to Select tool |
-| Drop a PDF | Open it (hold `Shift` to append to the current document) |
+### Tests
+
+```bash
+cargo test --workspace
+```
+
+The engine tests check real output: pixels sampled from rendered pages confirm
+that annotations land where they were placed (including on rotated pages),
+that glyphs sit the right way up, and that form edits and flattening show up
+when re-rendered.
+
+## Deploying
+
+Push to `main`; [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
+tests, builds both wasm bundles, publishes `web/` to Pages, and uploads desktop
+binaries for all three platforms as build artifacts.
+
+Pages has to be enabled on the repository first — **Settings → Pages → Source:
+GitHub Actions**. The workflow's own token is not permitted to create the Pages
+site, so this one step cannot be automated.
 
 ## Limitations
 
-- Password-protected PDFs can't be opened.
-- Text annotations use the 14 standard PDF fonts (Latin-1 characters only).
-- Existing text and objects can't be edited or removed — annotations are added
-  on top. Use Undo to take back an annotation you just added.
-- Rendering runs on the CPU in a worker; very complex pages take a moment.
+- Password-protected PDFs cannot be opened.
+- Text uses the 14 standard PDF fonts (Latin-1 only); there is no font embedding.
+- Existing page content cannot be edited or removed — annotations are layered on
+  top. Undo takes back anything you just added.
+- Signature fields are shown but cannot be signed.
+- Rendering is CPU-only and single-threaded on the web (wasm threads need
+  `SharedArrayBuffer`, which needs COOP/COEP headers that GitHub Pages cannot
+  set). The desktop build has no such limit.

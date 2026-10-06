@@ -4,13 +4,13 @@ const CACHE = `pdf-editor-${CACHE_VERSION}`;
 const ASSETS = [
   './',
   './index.html',
-  './style.css',
-  './app.js',
   './worker.js',
   './manifest.webmanifest',
   './icon.svg',
-  './pkg/pdf_editor.js',
-  './pkg/pdf_editor_bg.wasm',
+  './pkg/pdf_editor_ui.js',
+  './pkg/pdf_editor_ui_bg.wasm',
+  './worker-pkg/pdf_editor_worker.js',
+  './worker-pkg/pdf_editor_worker_bg.wasm',
 ];
 
 self.addEventListener('install', (event) => {

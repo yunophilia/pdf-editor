@@ -28,6 +28,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
-    server = ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, directory=str(Path(__file__).resolve().parent / "www")))
-    print(f"Serving www/ at http://127.0.0.1:{port}")
+    server = ThreadingHTTPServer(("127.0.0.1", port), partial(Handler, directory=str(Path(__file__).resolve().parent / "web")))
+    print(f"Serving web/ at http://127.0.0.1:{port}")
     server.serve_forever()

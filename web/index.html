@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Editor</title>
+  <meta name="description" content="Offline PDF editor — runs entirely in your browser.">
+  <meta name="theme-color" content="#1f2328">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+  <div id="main"></div>
+  <script type="module">
+    import init from './pkg/pdf_editor_ui.js';
+    init().catch((err) => {
+      document.getElementById('main').textContent = 'Failed to start: ' + err;
+      console.error(err);
+    });
+
+    if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
+      navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW failed', e));
+    }
+  </script>
+</body>
+</html>

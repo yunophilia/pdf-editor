@@ -1,2 +1,6 @@
 /target
-/www/pkg
+/web/pkg
+/web/worker-pkg
+# Real-world test documents are kept out of the repo (third-party forms).
+/pptc153.pdf
+/web/pptc153.pdf
