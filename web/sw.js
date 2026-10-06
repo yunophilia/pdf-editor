@@ -26,11 +26,37 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Cache-first for our own assets; the network is only consulted when something
-// is missing (e.g. a hard reload after a deploy).
+// Navigations go to the network first, so a deploy takes effect on the next
+// load rather than after an extra reload: a previously-installed worker would
+// otherwise answer the navigation from its cache before the new worker has
+// activated, serving the old shell. The cache remains the offline fallback.
+//
+// Everything else is cache-first. Asset names are not content-hashed, but each
+// deploy gets its own cache (CACHE_VERSION is the commit) and stale caches are
+// dropped on activate, so a cache hit is always from the running version.
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== location.origin) return;
+
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((res) => {
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(request, copy));
+          }
+          return res;
+        })
+        .catch(() =>
+          caches
+            .match(request, { ignoreSearch: true })
+            .then((hit) => hit || caches.match('./')),
+        ),
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(request, { ignoreSearch: true }).then(
       (hit) =>

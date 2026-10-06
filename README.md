@@ -101,6 +101,10 @@ Push to `main`; [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)
 tests, builds both wasm bundles, publishes `web/` to Pages, and uploads desktop
 binaries for all three platforms as build artifacts.
 
+The service worker fetches the page itself network-first and everything else
+cache-first, so a deploy takes effect on the next load rather than after an
+extra reload, while the app still works fully offline.
+
 Pages has to be enabled on the repository first — **Settings → Pages → Source:
 GitHub Actions**. The workflow's own token is not permitted to create the Pages
 site, so this one step cannot be automated.
