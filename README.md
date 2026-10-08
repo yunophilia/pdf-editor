@@ -10,7 +10,7 @@ machine — there is no server, no upload, no telemetry.
 
 ## Features
 
-- View, zoom and page through PDFs (rendered by [hayro](https://github.com/LaurenzV/hayro), a pure-Rust rasteriser)
+- View, zoom and page through PDFs, opening at **Fit page** so a page fills the window (Fit width and a manual zoom are a click away) (rendered by [hayro](https://github.com/LaurenzV/hayro), a pure-Rust rasteriser)
 - Page management: rotate, reorder, duplicate, delete, insert blank pages
 - Merge another PDF in, or extract selected pages to a new file
 - **Interactive form (AcroForm) editing** — text, multiline, checkbox, radio

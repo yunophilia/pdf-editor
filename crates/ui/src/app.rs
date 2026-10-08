@@ -13,10 +13,71 @@ use pdf_editor_shared::{
     Command, DocInfo, FieldKind, FieldValue, FormField, ImageSpec, InkSpec, PageSize, RectSpec,
     Rgb, StandardFont, TextSpec,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 const ZOOM_STEPS: [f64; 13] = [0.25, 0.35, 0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0];
 const THUMB_SCALE: f32 = 0.22;
+/// Space to leave around a page when fitting: the viewer's own padding plus
+/// room for the page label and a scrollbar.
+const FIT_PADDING: f64 = 72.0;
+/// How many rendered page images to keep. Each is a few hundred KB.
+const RENDER_CACHE_LIMIT: usize = 24;
+
+/// How a document is sized to the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fit {
+    /// Whole page visible, like a viewer's default view.
+    Page,
+    /// Page as wide as the window; scroll down through it.
+    Width,
+    /// Whatever the user last chose with the zoom controls.
+    Manual,
+}
+
+/// Rasterising at exactly the display scale would re-render on every pixel of
+/// a window drag. Rendering at quarter steps instead, rounded *up* so the
+/// image is only ever scaled down, keeps it sharp while collapsing a smooth
+/// resize into a handful of distinct renders -- most of which the cache
+/// already holds.
+fn render_scale_for(zoom: f64) -> f32 {
+    ((zoom * 4.0).ceil() / 4.0).clamp(0.25, 3.0) as f32
+}
+
+/// Rendered pages, keyed by page, that page's generation, and the scale.
+/// Zooming back to a scale already visited is then free.
+#[derive(Clone, Default)]
+pub struct RenderCache(Arc<Mutex<CacheInner>>);
+
+#[derive(Default)]
+struct CacheInner {
+    entries: HashMap<(usize, u64, u32), String>,
+    order: VecDeque<(usize, u64, u32)>,
+}
+
+impl RenderCache {
+    fn key(page: usize, generation: u64, scale: f32) -> (usize, u64, u32) {
+        (page, generation, (scale * 100.0).round() as u32)
+    }
+
+    fn get(&self, page: usize, generation: u64, scale: f32) -> Option<String> {
+        let inner = self.0.lock().ok()?;
+        inner.entries.get(&Self::key(page, generation, scale)).cloned()
+    }
+
+    fn put(&self, page: usize, generation: u64, scale: f32, url: String) {
+        let Ok(mut inner) = self.0.lock() else { return };
+        let key = Self::key(page, generation, scale);
+        if inner.entries.insert(key, url).is_none() {
+            inner.order.push_back(key);
+        }
+        while inner.order.len() > RENDER_CACHE_LIMIT {
+            if let Some(oldest) = inner.order.pop_front() {
+                inner.entries.remove(&oldest);
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -56,6 +117,10 @@ pub struct State {
     pub doc: Signal<Option<DocInfo>>,
     pub fields: Signal<Vec<FormField>>,
     pub zoom: Signal<f64>,
+    /// How the document is sized to the window.
+    pub fit: Signal<Fit>,
+    /// Content-box size of the scrolling area, from a ResizeObserver.
+    pub viewport: Signal<(f64, f64)>,
     pub tool: Signal<Tool>,
     pub selected: Signal<BTreeSet<usize>>,
     pub status: Signal<String>,
@@ -140,10 +205,13 @@ fn out_name(current: &str, suffix: &str) -> String {
 #[component]
 pub fn App() -> Element {
     use_context_provider(Engine::new);
+    use_context_provider(RenderCache::default);
     let state = State {
         doc: use_signal(|| None),
         fields: use_signal(Vec::new),
         zoom: use_signal(|| 1.0),
+        fit: use_signal(|| Fit::Page),
+        viewport: use_signal(|| (0.0, 0.0)),
         tool: use_signal(|| Tool::Select),
         selected: use_signal(BTreeSet::new),
         status: use_signal(|| "Open a PDF to get started".to_string()),
@@ -158,6 +226,79 @@ pub fn App() -> Element {
         pending_image: use_signal(|| None),
     };
     use_context_provider(|| state);
+
+    // Track the viewer's size. Dioxus's own `onresize` does not deliver events
+    // in this version, so the observer is installed through eval -- the same
+    // script runs on the web and in the desktop webview.
+    // Track the viewer's size. Dioxus's own `onresize` does not deliver events
+    // in this version, so the observer is installed through eval -- the same
+    // script runs on the web and in the desktop webview.
+    use_future(move || async move {
+        let mut eval = document::eval(
+            r#"
+            let watched = null;
+            let last = "";
+            // Sends only when the size actually changed, so the poll below
+            // costs nothing while the window is still.
+            const send = () => {
+                const el = document.querySelector('.viewer');
+                if (!el) return;
+                const r = el.getBoundingClientRect();
+                const key = r.width + "x" + r.height;
+                if (key === last) return;
+                last = key;
+                dioxus.send([r.width, r.height]);
+            };
+            const observer = new ResizeObserver(send);
+            const attach = () => {
+                const el = document.querySelector('.viewer');
+                if (el && el !== watched) {
+                    if (watched) observer.unobserve(watched);
+                    observer.observe(el);
+                    watched = el;
+                }
+                send();
+            };
+            attach();
+            // The observer handles the common case immediately. The poll is a
+            // safety net: some embedded webviews resize without notifying an
+            // observer, and it also re-attaches if the element is replaced.
+            setInterval(attach, 400);
+            // The channel closes when this script returns, which would discard
+            // every later callback, so park here forever. Rust never sends, so
+            // this never resolves.
+            await dioxus.recv();
+            "#,
+        );
+        while let Ok((width, height)) = eval.recv::<(f64, f64)>().await {
+            state.viewport.clone().set((width, height));
+        }
+    });
+
+    // Keep the zoom in step with the window whenever a fit mode is active.
+    use_effect(move || {
+        let fit = (state.fit)();
+        let (vw, vh) = (state.viewport)();
+        let pages = state.pages();
+        if fit == Fit::Manual || pages.is_empty() || vw <= 1.0 || vh <= 1.0 {
+            return;
+        }
+        // Fit the largest page, so every page of a mixed-size document fits.
+        let widest = pages.iter().fold(1.0_f64, |a, p| a.max(p.width as f64));
+        let tallest = pages.iter().fold(1.0_f64, |a, p| a.max(p.height as f64));
+        let by_width = (vw - FIT_PADDING) / widest;
+        let zoom = match fit {
+            Fit::Width => by_width,
+            Fit::Page => by_width.min((vh - FIT_PADDING) / tallest),
+            Fit::Manual => return,
+        }
+        .clamp(0.1, 8.0);
+        // peek, not read: this effect must not re-run on its own write.
+        let current = *state.zoom.peek();
+        if (current - zoom).abs() > 0.002 {
+            state.zoom.clone().set(zoom);
+        }
+    });
 
     // A document handed to us at launch: a path on the command line (desktop)
     // or a same-origin ?open= parameter (web).
@@ -453,6 +594,20 @@ fn Toolbar() -> Element {
             }
 
             div { class: "group zoom",
+                button {
+                    class: if (state.fit)() == Fit::Page { "active" } else { "" },
+                    disabled: !has_doc,
+                    title: "Fit the whole page in the window",
+                    onclick: move |_| state.fit.set(Fit::Page),
+                    "Fit page"
+                }
+                button {
+                    class: if (state.fit)() == Fit::Width { "active" } else { "" },
+                    disabled: !has_doc,
+                    title: "Fit the page to the window width",
+                    onclick: move |_| state.fit.set(Fit::Width),
+                    "Fit width"
+                }
                 button { onclick: move |_| step_zoom(state, -1), "−" }
                 span { class: "zoom-label", "{((state.zoom)() * 100.0).round()}%" }
                 button { onclick: move |_| step_zoom(state, 1), "+" }
@@ -462,6 +617,9 @@ fn Toolbar() -> Element {
 }
 
 fn step_zoom(mut state: State, dir: i32) {
+    // Reaching for the zoom controls means the user wants a fixed size, not a
+    // size that moves when the window does.
+    state.fit.set(Fit::Manual);
     let current = (state.zoom)();
     let next = if dir > 0 {
         ZOOM_STEPS.iter().find(|z| **z > current + 1e-6).copied()
@@ -690,16 +848,22 @@ fn Thumb(index: usize, width: f32, height: f32) -> Element {
 
     let my_gen = use_memo(move || state.page_gen.read().get(index).copied().unwrap_or(0));
 
+    let cache = use_context::<RenderCache>();
     let png = use_resource(move || {
         let engine = engine.clone();
+        let cache = cache.clone();
         let g = my_gen();
         let visible = seen();
         async move {
-            let _ = g;
             if !visible {
                 return None;
             }
-            engine.render(index, THUMB_SCALE).await.ok().map(|b| png_data_url(&b))
+            if let Some(hit) = cache.get(index, g, THUMB_SCALE) {
+                return Some(hit);
+            }
+            let url = engine.render(index, THUMB_SCALE).await.ok().map(|b| png_data_url(&b))?;
+            cache.put(index, g, THUMB_SCALE, url.clone());
+            Some(url)
         }
     });
 
@@ -748,9 +912,17 @@ fn Viewer() -> Element {
     let state = use_context::<State>();
     let pages = state.pages();
 
+    let mut state = state;
+    // Seeds the first measurement; App installs a ResizeObserver for changes.
+    let measure_once = move |e: Event<MountedData>| async move {
+        if let Ok(rect) = e.get_client_rect().await {
+            state.viewport.set((rect.size.width, rect.size.height));
+        }
+    };
+
     if pages.is_empty() {
         return rsx! {
-            section { class: "viewer",
+            section { class: "viewer", onmounted: measure_once,
                 div { class: "empty",
                     h1 { "PDF Editor" }
                     p { "Open a PDF to get started. Everything runs locally — nothing is uploaded." }
@@ -760,7 +932,7 @@ fn Viewer() -> Element {
     }
 
     rsx! {
-        section { class: "viewer",
+        section { class: "viewer", onmounted: measure_once,
             div { class: "pages",
                 for (i, size) in pages.iter().enumerate() {
                     PageView { key: "{i}", index: i, width: size.width, height: size.height }
@@ -800,20 +972,27 @@ fn PageView(index: usize, width: f32, height: f32) -> Element {
     // any page changes.
     let my_gen = use_memo(move || state.page_gen.read().get(index).copied().unwrap_or(0));
 
+    let cache = use_context::<RenderCache>();
     let png = {
         let engine = engine.clone();
+        let cache = cache.clone();
         use_resource(move || {
             let engine = engine.clone();
+            let cache = cache.clone();
             let zoom_sig = state.zoom;
             let g = my_gen();
-            let z = zoom_sig();
+            let scale = render_scale_for(zoom_sig());
             let visible = seen();
             async move {
-                let _ = g;
                 if !visible {
                     return None;
                 }
-                engine.render(index, z as f32).await.ok().map(|b| png_data_url(&b))
+                if let Some(hit) = cache.get(index, g, scale) {
+                    return Some(hit);
+                }
+                let url = engine.render(index, scale).await.ok().map(|b| png_data_url(&b))?;
+                cache.put(index, g, scale, url.clone());
+                Some(url)
             }
         })
     };
